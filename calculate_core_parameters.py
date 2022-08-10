@@ -570,8 +570,6 @@ def calculate_physics_parameter(outcat):
     writer.close()
 
 
-
-
 if __name__ == '__main__':
     outcat = fits.getdata('gaussclumps_result/gauss_outcat_m16_13_ellipse.FIT')
     calculate_physics_parameter(outcat)
