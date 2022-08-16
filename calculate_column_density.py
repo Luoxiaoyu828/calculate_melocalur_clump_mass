@@ -9,11 +9,9 @@ from astropy.utils.data import get_pkg_data_filename
 import astropy.constants as Constant
 import astropy.units as u
 import os
-# from spectral_cube import SpectralCube
 from matplotlib.patches import Ellipse
 from matplotlib.backends.backend_pdf import PdfPages
 import warnings
-import scipy.optimize as optimize
 import scipy.stats as stats
 import scipy
 import seaborn as sns
@@ -588,7 +586,6 @@ def calculate_physics_parameter(outcat):
     reault_pd.to_excel(writer, 'Sheet1')
     reault_pd1.to_excel(writer, 'Sheet2')
     writer.close()
-
 
 
 if __name__ == '__main__':

@@ -1,5 +1,8 @@
 /.idea
 /pdf_gaussclumps_control_34
 /pdf_gaussclumps_control_35
+/pdf_gaussclumps_control_36
+/pdf_gaussclumps_control_37
+*.csv
 /test_data
 /__pycache__

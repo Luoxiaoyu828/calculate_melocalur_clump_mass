@@ -96,8 +96,7 @@ class Calculate_Parameters:
 
     def __init__(self, record, pdf_path, co='13'):
         self.pdf_path = pdf_path
-        if not os.path.exists(self.pdf_path):
-            os.mkdir(self.pdf_path)
+        os.makedirs(self.pdf_path, exist_ok=True)
         self.core_num = record[0]
         self.co = co
         co_12_path = r'test_data/0155+005_U/0155+005_U.fits'
@@ -580,7 +579,7 @@ if __name__ == '__main__':
     info = []
     for i in range(outcat.shape[0]):
         item = outcat.iloc[i]
-        calc = Calculate_Parameters(item, 'pdf_gaussclumps_control_34', '13')
+        calc = Calculate_Parameters(item, 'MWISP_outcat', '13')
         if i % 50 == 0:
             print('the {}-th record'.format(i))
         info.append([calc.n, calc.p_th, calc.p_nth, calc.p_cloud])
