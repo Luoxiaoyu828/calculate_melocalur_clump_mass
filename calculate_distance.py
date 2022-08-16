@@ -4,9 +4,11 @@ import re
 import numpy as np
 import os
 import pandas as pd
+import astropy.units as u
+import tqdm
 
 
-def get_distance(l, b, vlsr, dvlsr, save_folder, file_name, prob=0.5, u_a=0, du_a=0, u_d=0, du_d=0):
+def get_distance(l, b, vlsr, save_folder, file_name, dvlsr=0, prob=0.5, u_a=0, du_a=0, u_d=0, du_d=0):
     # 'http://www3.mpifr-bonn.mpg.de/staff/abrunthaler/bessel_calc2.0/bayesian.php?l=15.72&b=0.75&prob=0.5&vlsr=12.3&dvlsr=1.17&u_a=0.0&du_a=0.0&u_d=0.0&du_d=0.0'
     url_base = r'http://www3.mpifr-bonn.mpg.de/staff/abrunthaler/bessel_calc2.0/'
     r = requests.get(
@@ -31,8 +33,9 @@ def get_distance(l, b, vlsr, dvlsr, save_folder, file_name, prob=0.5, u_a=0, du_
         name1_num = re.findall("\d+\.?\d*", str(name1[0]))  # 正则表达式
         name2_num = re.findall("\d+\.?\d*", str(name2[0]).split(',')[0])  # 正则表达式
         dis_zf_prob = name1_num + name2_num
-        dis_zf_prob = np.array(dis_zf_prob, np.float32).reshape([1, 3])
-
+        dis_zf_prob = np.array(dis_zf_prob, np.float32).reshape([3, ])
+        z = (dis_zf_prob[0] * u.kpc * np.deg2rad(b)).to(u.pc).value
+        dis_zf_prob = np.hstack([dis_zf_prob, z]).reshape([1, 4])
         response = requests.get(png_url + name3[0])
         if response.status_code == 200:
             with open(distece_png, 'wb') as f:
@@ -47,19 +50,18 @@ def get_distance(l, b, vlsr, dvlsr, save_folder, file_name, prob=0.5, u_a=0, du_
 
 def calculate_distance_outcat(outcat_path):
     outcat = pd.read_csv(outcat_path, sep='\t')
-    dis_zf_prob_all = np.zeros([outcat.shape[0], 3], np.float32)
-    for i in range(outcat.shape[0]):
+    dis_zf_prob_all = np.zeros([outcat.shape[0], 4], np.float32)
+    for i in tqdm.tqdm(range(outcat.shape[0])):
         l = outcat['Galactic_Longitude'].values[i]
         b = outcat['Galactic_Latitude'].values[i]
         vlsr = outcat['Velocity'].values[i]
-        dvlsr = outcat['Size_velocity'].values[i]
         file_name = outcat['ID'].values[i]
         save_folder = outcat_path.replace('.csv', '')
         os.makedirs(save_folder, exist_ok=True)
-        dis_zf_prob = get_distance(l, b, vlsr, dvlsr, save_folder, file_name)
-        # print(dis_zf_prob[0,:])
+        dis_zf_prob = get_distance(l, b, vlsr, save_folder, file_name)
+
         dis_zf_prob_all[i, :] = dis_zf_prob
-    dis_zf_prob_all_pd = pd.DataFrame(dis_zf_prob_all, columns=['Distance(kpc)', 'd_Distance(kpc)', 'Prob'])
+    dis_zf_prob_all_pd = pd.DataFrame(dis_zf_prob_all, columns=['Distance(kpc)', 'd_Distance(kpc)', 'Prob', 'z(pc)'])
     outcat_all = pd.concat([outcat, dis_zf_prob_all_pd], axis=1)
 
     return outcat_all
@@ -68,3 +70,4 @@ def calculate_distance_outcat(outcat_path):
 if __name__ == '__main__':
     outcat_path = r'test_data/0155+005_L_MGM/MWISP_outcat.csv'
     outcat_all = calculate_distance_outcat(outcat_path)
+    outcat_all.to_csv(outcat_path.replace('.csv', '_d.csv'), sep='\t', index=False)
