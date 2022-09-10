@@ -1,13 +1,11 @@
 from astropy.io import fits
 import astropy.wcs as WCS
 from astropy.coordinates import SkyCoord
-from astropy.utils.data import get_pkg_data_filename
 import astropy.constants as constants
 import astropy.units as u
 import numpy as np
 import pandas as pd
 import math
-import os
 import matplotlib.pyplot as plt
 from matplotlib.patches import Ellipse
 from matplotlib.backends.backend_pdf import PdfPages
@@ -25,40 +23,10 @@ warnings.filterwarnings("ignore")
 """
 
 
-class CO_Data:
-    def __init__(self, co_12_path=None, co_13_path=None, co_18_path=None):
-        self.co_13_path = co_13_path
-        self.co_12_path = co_12_path
-        self.co_18_path = co_18_path
-
-        self.co_13_data, self.wcs13 = self.dd_header(self.co_13_path)
-        self.co_12_data, self.wcs12 = self.dd_header(self.co_12_path)
-        self.co_18_data, self.wcs18 = self.dd_header(self.co_18_path)
-
-    def dd_header(self, path):
-        """
-        :param data_header: 数据原始头文件
-        :return: 经过处理后的wcs坐标系下的信息
-        """
-        if path is None:
-            return None, None
-
-        filename = get_pkg_data_filename(path)
-        hdu = fits.open(filename)[0]
-        data = hdu.data
-        data_header = hdu.header
-
-        keys = data_header.keys()
-        key = [k for k in keys if k.endswith('4')]
-        [data_header.remove(k) for k in key]
-        data_header.remove('VELREF')
-
-        wcs = WCS.WCS(data_header)
-
-        return data, wcs
-
-
 class COData:
+    """
+    CO数据的类，包含12CO, 13CO, C18O的一些固有属性
+    """
 
     def __init__(self, co_data_path=None, co='13'):
         k = constants.k_B
@@ -78,7 +46,7 @@ class COData:
             self.v0 = v0_13
             self.miu_mol = 29
             self.delta_v = 0.166
-            self.ratio = 3.9 * 10 ** 5   # N(H2) = ratio * N(CO)
+            self.ratio = 3.9 * 10 ** 5   # N(H2) = ratio * N(CO) 两种分子的比例
         elif co == '18':
             self.v0 = v0_18
             self.miu_mol = 30
@@ -87,6 +55,9 @@ class COData:
         else:
             raise KeyError('v0 mast be 12 or 13 or 18!!')
         self.T0 = h * self.v0 / k
+        # 12CO --> 5.53214527 Hz K s
+        # 13CO --> 5.2888308 Hz K s
+        # C18O --> 5.26871381 Hz K s
 
     def dd_header(self, path):
         """
@@ -95,9 +66,10 @@ class COData:
         """
         if path is None:
             return None, None
-
-        filename = get_pkg_data_filename(path)
-        hdu = fits.open(filename)[0]
+        try:
+            hdu = fits.open(path)[0]
+        except FileExistsError:
+            raise('%s not found!' % path)
         data = hdu.data
         data_header = hdu.header
 
@@ -141,45 +113,42 @@ class Calculate_Parameters:
     miu_h = 2.8
     T_bg = 2.73 * u.K
 
-    def __init__(self, record, pdf_path, co_data12=COData(co='12'), co_data=COData(co='13')):
+    def __init__(self, record, pdf, co_data12=COData(co='12'), co_data=COData(co='13')):
+        self.data_cube_fitting = None
         self.mask = None
-        self.pdf_path = pdf_path
-        os.makedirs(self.pdf_path, exist_ok=True)
+        self.pdf = pdf
         self.core_num = record[0]
         self.co_data = co_data
 
         self.co_data12 = co_data12
         self.record = record
-        self.pdf = PdfPages('{}/{}.pdf'.format(self.pdf_path, str(self.core_num).zfill(3)))
 
-        self.data12 = self.get_data_cube(co_data12)
+        self.data12, _ = self.get_data_cube(co_data12)
         self.data, self.local_wcs = self.get_data_cube(co_data)
         self.XX = get_xyz(self.data)
+        self.get_mask()
 
-        self.tex, self.tr_12 = self.calculate_tex()
+        self.tex, self.tex_mean, self.tex_max, self.tr_12 = self.calculate_tex()
         self.v_fwhm, self.tr = self.calculate_vfwhm()
-        self.tao = self.calculate_tao()
+        self.tao, self.tao_mean, self.tao_max = self.calculate_tao()
 
-        self.vth = self.calculate_vth()
+        self.vth, self.vth_mean = self.calculate_vth()
 
-        self.vnth = self.calculate_vnth()
+        self.vnth, self.vnth_mean = self.calculate_vnth()
 
-        self.n_co, self.n_h2 = self.get_n_h2()
+        self.n_h2, self.n_h2_mean, self.n_h2_max = self.get_n_h2()
         #
         self.mass_, self.mass_sum = self.calculate_m()
         #
         self.reff = self.calculate_reff_GC()
-        #
+
         self.mass_vir = self.calcultate_M_vir()
         #
         self.vir_a = self.calculate_vir()
 
+        self.density_s = self.calculate_density_s()
         # self.p_th, self.p_nth, self.p_tot, self.n = self.calculate_p_internal()
         # self.p_cloud = self.calculate_p_external()
-
-        self.density_s = self.calculate_density_s()
-
-        self.pdf.close()
 
     def get_data_cube(self, co_data):
         """
@@ -193,9 +162,13 @@ class Calculate_Parameters:
         cen_pt_pix = np.array(wcs.all_world2pix(cen_pt[0], cen_pt[1], cen_pt[2] * 1000, 0)).T
         size = self.record[['Size_major', 'Size_minor', 'Size_velocity']].values
         delta = np.array(wcs.pixel_scale_matrix.sum(axis=0)) * np.array([3600, 3600, 1 / 1000])
+        angle_rad = np.deg2rad(self.record['Theta'])
         fwhm = np.abs(size / delta)
+        fwhm1 = np.vstack([fwhm, fwhm]) * np.array([[np.cos(angle_rad), np.sin(angle_rad), 1],
+                                                    [np.sin(angle_rad), np.cos(angle_rad), 1]])
+        fwhm[:2] = np.abs(fwhm1[:, :2]).max(1)
         range_down = np.floor(cen_pt_pix - fwhm).astype(np.int32)
-        range_up = np.ceil(cen_pt_pix + fwhm).astype(np.int32)
+        range_up = np.ceil(cen_pt_pix + fwhm + 1).astype(np.int32)
 
         data_cube = data[range_down[2]:range_up[2], range_down[1]:range_up[1], range_down[0]:range_up[0]]
         local_wcs = wcs[range_down[2]:range_up[2], range_down[1]:range_up[1], range_down[0]:range_up[0]]
@@ -219,12 +192,16 @@ class Calculate_Parameters:
 
         [size_i, size_j] = tr.shape
         tex = np.zeros(tr.shape)
+        p_Tbg = planck_function(T_bg, v0)
         for i in range(size_i):
             for j in range(size_j):
-                temp = T0 / ln(1 + T0 / (tr[i, j] + planck_function(T_bg, v0)))
+                temp = T0 / ln(1 + T0 / (tr[i, j] + p_Tbg))
                 tex[i, j] = temp.to(u.K).value
-        tex = tex * u.K
-        return tex, tr
+
+        tex = tex * self.mask * u.K
+        tex_mean = tex.value.sum() / self.mask.sum() * u.K
+        tex_max = tex.value.max() * u.K
+        return tex, tex_mean, tex_max, tr
 
     def calculate_vfwhm(self):
         """
@@ -275,7 +252,9 @@ class Calculate_Parameters:
             tao_region = mask_region * tao
             tao[idx_i_all[i], idx_j_all[i]] = tao_region.sum() / mask_region.sum()
 
-        return tao
+        tao_mean = (tao * self.mask).sum() / self.mask.sum()
+        tao_max = (tao * self.mask).max()
+        return tao, tao_mean, tao_max
 
     def calculate_vth(self):
         """
@@ -293,8 +272,9 @@ class Calculate_Parameters:
 
         vth = (8 * ln(2) * k * tex / (miu_mol * mh)) ** 0.5
         vth = vth.decompose().to(u.km/u.s)
+        vth_mean = (vth * self.mask).sum() / self.mask.sum()
 
-        return vth
+        return vth, vth_mean
 
     def calculate_vnth(self):
         """
@@ -304,9 +284,37 @@ class Calculate_Parameters:
         v_fwhm = self.v_fwhm
         v_th = self.vth
         v_nth = (v_fwhm ** 2 - v_th ** 2) ** 0.5
-        return v_nth
+        v_nth_mean = (v_nth * self.mask).sum() / self.mask.sum()
+        return v_nth, v_nth_mean
 
-    def get_n_h2(self, use_fit=True, boundary_times=2.3548):
+    def get_mask(self, boundary_times=2.3548):
+        data = self.data
+        XX = self.XX
+        loc_wcs = self.local_wcs
+
+        size = self.record[['Size_major', 'Size_minor', 'Size_velocity']].values
+        delta = np.array(loc_wcs.pixel_scale_matrix.sum(axis=0)) * np.array([3600, 3600, 1 / 1000])
+        size_pt = np.abs(size / delta) / 2.3548
+        angle = np.deg2rad(self.record['Theta'])
+        A = self.record['Peak']
+
+        cen_pt = self.record[['Galactic_Longitude', 'Galactic_Latitude', 'Velocity']].values
+        cen_pt_pix = np.array(loc_wcs.all_world2pix(cen_pt[0], cen_pt[1], cen_pt[2] * 1000, 0)).T  # 转换坐标时，坐标原点为0
+
+        params = np.array([A, cen_pt_pix[0], cen_pt_pix[1], size_pt[0], size_pt[1], angle, cen_pt_pix[2], size_pt[2]])
+        params_0 = np.array([A, cen_pt_pix[0], cen_pt_pix[1], size_pt[0], size_pt[1], 0, cen_pt_pix[2], size_pt[2]])
+        gauss_func_0 = get_func(params_init=params_0)
+        YY_0 = gauss_func_0(cen_pt_pix[0], cen_pt_pix[1], cen_pt_pix[2] + size_pt[2] * boundary_times/2)
+
+        gauss_func = get_func(params_init=params)
+        YY = gauss_func(XX[:, 0] - 1, XX[:, 1] - 1, XX[:, 2] - 1)
+        YY[YY < YY_0] = 0
+        data_Y = YY.reshape(data.shape)
+        data_Y_0 = data_Y.sum(0)
+        self.mask = (data_Y_0 > 0).astype(np.int32)
+        self.data_cube_fitting = data_Y
+
+    def get_n_h2(self, use_fit=True):
         """
         计算C18O的柱密度的公式
         算法：Corrigendum: How to Calculate Molecular Column Density 中 公式(90)
@@ -321,36 +329,11 @@ class Calculate_Parameters:
         T_bg = self.T_bg
         tao_ = np.ones_like(tex.value)
         [size_i, size_j] = tao_.shape
-        data = self.data
-        XX = self.XX
-        loc_wcs = self.local_wcs
 
-        size = self.record[['Size_major', 'Size_minor', 'Size_velocity']].values
-        delta = np.array(loc_wcs.pixel_scale_matrix.sum(axis=0)) * np.array([3600, 3600, 1 / 1000])
-        size_pt = np.abs(size / delta) / 2.3548
-        angle = self.record['Theta']
-        A = self.record['Peak']
-
-        cen_pt = self.record[['Galactic_Longitude', 'Galactic_Latitude', 'Velocity']].values
-        cen_pt_pix = np.array(loc_wcs.all_world2pix(cen_pt[0], cen_pt[1], cen_pt[2] * 1000, 0)).T   # 转换坐标时，坐标原点为0
-
-        params = np.array([A, cen_pt_pix[0], cen_pt_pix[1], size_pt[0], size_pt[1], -angle, cen_pt_pix[2], size_pt[2]])
-        params_0 = np.array([A, cen_pt_pix[0], cen_pt_pix[1], size_pt[0], size_pt[1], 0, cen_pt_pix[2], size_pt[2]])
-        gauss_func_0 = get_func(params_init=params_0)
-        YY_0 = gauss_func_0(cen_pt_pix[0], cen_pt_pix[1], cen_pt_pix[2] + size_pt[2] * boundary_times)
-
-        gauss_func = get_func(params_init=params)
-        YY = gauss_func(XX[:, 0]-1, XX[:, 1]-1, XX[:, 2]-1)
-        YY[YY < YY_0] = 0
-        data_Y = YY.reshape(data.shape)
         v0 = self.co_data.v0
         delta_v = self.co_data.delta_v
         ratio = self.co_data.ratio
         T0 = self.co_data.T0
-        if use_fit:
-            data_cube = data_Y  # 拟合的结果
-        else:
-            data_cube = data  # 原始数据
 
         if self.co_data.co == '13':
             coef, tao = 2.482 * 10 ** 14, self.tao
@@ -360,24 +343,32 @@ class Calculate_Parameters:
         else:
             coef, tao_ = 2.48 * 10 ** 14, tao_
 
-        n_co = np.zeros(data.shape[1:], np.float)
-        data_Y_0 = data_Y.sum(0)
-        self.mask = (data_Y_0 > 0).astype(np.int32)
-        [size_i, size_j] = np.where(data_Y_0 > 0)
-        for i in size_i:
-            for j in size_j:
+        if use_fit:
+            data_cube = self.data_cube_fitting  # 拟合的结果
+        else:
+            data_cube = self.data  # 原始数据
+
+        n_co = np.zeros(tao_.shape, np.float32)
+        data_Y_0 = data_cube.sum(0)
+        [idx_i, idx_j] = np.where(data_Y_0 > 0)
+        for i in idx_i:
+            for j in idx_j:
                 data_fwhm = data_cube[:, i, j]
 
-                temp = coef * (tex[i, j] + 0.88 * u.K) * math.exp(T0 / tex[i, j]) / (
-                        math.exp(T0 / tex[i, j]) - 1) * data_fwhm.sum() * delta_v / (
-                               planck_function(tex[i, j], v0) - planck_function(T_bg, v0)) * tao_[i, j] / (
-                               u.cm ** 2)
+                temp = coef * (tex[i, j] + 0.88 * u.K) * math.exp(T0 / tex[i, j]) / (math.exp(T0 / tex[i, j]) - 1)\
+                       * data_fwhm.sum() * delta_v / (planck_function(tex[i, j], v0) - planck_function(T_bg, v0))\
+                       * tao_[i, j] / (u.cm ** 2)
                 n_co[i, j] = temp.to(u.cm**-2).value
-        n_co = n_co*u.cm**-2
+
         nh2 = ratio * n_co
+        nh2[np.isnan(nh2)] = 0
+        nh2_mean = (nh2 * self.mask).sum() / self.mask.sum() * u.cm**-2
+        nh2_max = (nh2 * self.mask).max() * u.cm**-2
+        nh2 = nh2 * u.cm**-2
+
         self.save_fig(nh2.value)
 
-        return n_co, nh2
+        return nh2, nh2_mean, nh2_max
 
     def calculate_reff_GC(self):
         """
@@ -399,9 +390,12 @@ class Calculate_Parameters:
         pi = math.pi
         # 望远镜主波束宽度, 单位: 角秒(")
         sita_mb = 52 * u.arcsec
+        area_ = area / pi - sita_mb ** 2
+        if area_ <= 0:
+            area_ = area / pi
 
-        reff = 0.5 * d * (4 / pi * area - sita_mb ** 2) ** 0.5
-        reff = (reff / 60 / 60 / 180 * math.pi) / u.arcsec
+        reff = d * area_ ** 0.5
+        reff = (reff / 3600 / 180 * math.pi) / u.arcsec
         return reff.to(constants.pc)
 
     def calculate_m(self):
@@ -440,29 +434,49 @@ class Calculate_Parameters:
         return vir
 
     def save_fig(self, data_cube):
+        plt.rcParams['xtick.direction'] = 'in'
+        plt.rcParams['ytick.direction'] = 'in'
         local_wcs = self.local_wcs
+        local_data = self.data
 
         cen_pt = self.record[['Galactic_Longitude', 'Galactic_Latitude', 'Velocity']].values
         cen_pt_pix = np.array(local_wcs.all_world2pix(cen_pt[0], cen_pt[1], cen_pt[2] * 1000, 0)).T
         markersize = 2
-        width = self.record['Size_major'] / 30 / 2.3548 * 4
-        height = self.record['Size_minor'] / 30 / 2.3548 * 4
-        angle = self.record['Theta']
+        width = self.record['Size_major'] / 30 * 2
+        height = self.record['Size_minor'] / 30 * 2
+        angle = -1 * self.record['Theta']
 
         fig = plt.figure()
-        ax = fig.add_subplot(111, projection=local_wcs.celestial)
-        plt.imshow(data_cube)
+        ax = fig.add_subplot(211, projection=local_wcs.celestial)
+        ax.imshow(data_cube)
 
-        ellipse = Ellipse(xy=(cen_pt_pix[0], cen_pt_pix[1]), width=width, height=height, alpha=0.3, angle=-1*angle)
+        ellipse = Ellipse(xy=(cen_pt_pix[0], cen_pt_pix[1]), width=width, height=height, alpha=0.3, angle=angle)
+        """
+        xy : (float, float)
+            xy coordinates of ellipse centre.
+        width : float
+            Total length (diameter) of horizontal axis.
+        height : float
+            Total length (diameter) of vertical axis.
+        angle : float, default: 0
+            Rotation in degrees anti-clockwise.
+        """
         ax.add_patch(ellipse)
-
         outcat_wcs_c = SkyCoord(frame="galactic", l=cen_pt[0], b=cen_pt[1], unit="deg")
         ax.plot_coord(outcat_wcs_c, 'r*', markersize=markersize)
-        plt.title(self.co_data.co + '_CO')
-        plt.rcParams['xtick.direction'] = 'in'
-        plt.rcParams['ytick.direction'] = 'in'
-        plt.xlabel('GLON')
-        plt.ylabel('GLAT')
+        ax.set_title(self.record['ID'] + ', Theta=%.1f' % self.record['Theta'])
+        ax.set_xlabel('')
+        ax.set_xticks([])
+        ax.set_ylabel('GLAT')
+
+        ax1 = fig.add_subplot(212, projection=local_wcs.celestial)
+        ax1.imshow(local_data.sum(0) * self.mask)
+        ellipse1 = Ellipse(xy=(cen_pt_pix[0], cen_pt_pix[1]), width=width, height=height, alpha=0.3, angle=angle)
+        ax1.add_patch(ellipse1)
+
+        ax1.plot_coord(outcat_wcs_c, 'r*', markersize=markersize)
+        ax1.set_xlabel('GLON')
+        ax1.set_ylabel('GLAT')
 
         self.pdf.savefig()
         plt.close()
@@ -501,89 +515,46 @@ class Calculate_Parameters:
         M = self.mass_sum
 
         density_s = M / (math.pi * R**2)
-        return density_s
+        return density_s.to(u.M_sun * (u.pc ** (-2)))
 
 
-def calculate_physics_parameter(outcat):
-    # outcat = fits.getdata('gaussclumps_result/gauss_outcat_m16_13_ellipse.FIT')
-    # file_list = os.listdir('data/core')
-    # k = [int(k.split('.')[0]) for k in file_list]
-    info = []
-    for i, item in enumerate(outcat):
-        calc = Calculate_Parameters(item, 'pdf_gaussclumps_control_1', '13')
-        if i % 50 == 0:
-            print('the {}-th record'.format(i))
-        info.append([calc.tex, calc.v_fwhm, calc.tao, calc.n_h2, calc.mass_sum, calc.vir_a, calc.reff,
-                     calc.mass_vir, calc.vth, calc.vnth])
-
-    result = np.zeros((len(outcat), 10), np.float)
-    for num, item in enumerate(info):
-        for i, item1 in enumerate(item):
-            if i == 0 or i == 3:
-                result[num, i] = item1.value.max()
-            elif i == 2:
-                result[num, i] = item1.mean()
-            elif i == 8 or i == 9:
-                result[num, i] = item1.value.mean()
-            else:
-                result[num, i] = item1.value
-
-    reault_pd = pd.DataFrame(
-        {
-            'Tex': result[:, 0], 'v_fwhm': result[:, 1], 'tao': result[:, 2], 'nh2': result[:, 3], 'M_sum': result[:, 4],
-         'vir_a': result[:, 5], 'reff': result[:, 6], 'M_vir': result[:, 7], 'vth': result[:, 8], 'vnth': result[:, 9]
-         })
-
-    reault_pd1 = pd.DataFrame()
-    for item in reault_pd:
-        reault_pd1[item] = [reault_pd[item].max(), reault_pd[item].min(), reault_pd[item].std(), reault_pd[item].mean()]
-
-    # save result into xlsx file, and draw pictures use it
-    writer = pd.ExcelWriter('data/gaussclumps_parameter_3_m16_20201005.xlsx')
-    reault_pd.to_excel(writer, 'Sheet1')
-    reault_pd1.to_excel(writer, 'Sheet2')
-    writer.close()
-
-
-def calculate_pp(outcat_path, co_12_path, co_13_path, outcat_d_p_path=None):
-
+def calc_clump_params_main(outcat_path, co12_path, co13_path, save_outcat_path=None):
+    """
+    计算分子云核的物理参数
+    outcat_path: 云核的形态核表(MGM+dis)
+    co12_path: 12CO数据所在路径
+    co13_path: 13CO数据所在路径
+    physical_outcat_path: 形态参数和物理参数的总核表保存的路径
+    """
     outcat = pd.read_csv(outcat_path, sep='\t')
-    co_data12 = COData(co_12_path)
-    co_data13 = COData(co_13_path)
-    info = []
-    for i in tqdm.tqdm(range(outcat.shape[0])):
-        item = outcat.iloc[i]
-        calc = Calculate_Parameters(item, pdf_path='pdf_gaussclumps_control_37', co_data12=co_data12, co_data=co_data13)
-        info.append([calc.tex, calc.v_fwhm, calc.tao, calc.n_h2, calc.mass_sum, calc.vir_a, calc.reff,
-                     calc.mass_vir, calc.vth, calc.vnth])
+    co_data12 = COData(co_data_path=co12_path, co='12')
+    co_data13 = COData(co_data_path=co13_path, co='13')
 
-    result = np.zeros((len(outcat), 10), np.float32)
-    for num, item in enumerate(info):
-        for i, item1 in enumerate(item):
-            if i == 0 or i == 3:
-                result[num, i] = item1.value.max()
-            elif i == 2:
-                result[num, i] = item1.mean()
-            elif i == 8 or i == 9:
-                result[num, i] = item1.value.mean()
-            else:
-                result[num, i] = item1.value
-    reault_pd = pd.DataFrame(
-        {
-            'Tex': result[:, 0], 'v_fwhm': result[:, 1], 'tao': result[:, 2], 'nh2': result[:, 3],
-            'M_sum': result[:, 4],
-            'vir_a': result[:, 5], 'reff': result[:, 6], 'M_vir': result[:, 7], 'vth': result[:, 8],
-            'vnth': result[:, 9]
-        })
+    pdf = PdfPages(outcat_path.replace('.csv', '.pdf'))
+    clumps_num = outcat.shape[0]
+    col_num = 14
+    outcat_ph = np.zeros([clumps_num, col_num])
+    for i in tqdm.tqdm(range(clumps_num)):
+        item = outcat.iloc[i]
+        calc = Calculate_Parameters(item, pdf=pdf, co_data12=co_data12, co_data=co_data13)
+        info = np.array([calc.tex_mean.to(u.K).value, calc.tex_max.to(u.K).value, calc.v_fwhm.to(u.km/u.s).value,
+                         calc.vth_mean.to(u.km/u.s).value, calc.vnth_mean.to(u.km/u.s).value, calc.tao_mean,
+                         calc.tao_max, calc.reff.to(u.pc).value, calc.n_h2_mean.to(10**21*u.cm**-2).value,
+                         calc.n_h2_max.to(10**21*u.cm**-2).value, calc.mass_sum.to(u.Msun).value,
+                         calc.mass_vir.to(u.Msun).value, calc.vir_a, calc.density_s.value])
+        outcat_ph[i, :] = info
+    pdf.close()
+
+    reault_pd = pd.DataFrame(outcat_ph,
+                             columns=('Tex_mean(K)', 'Tex_max(K)', 'v_fwhm(km/s)', 'vth_mean(km/s)', 'vnth_mean(km/s)',
+                                      'tao_mean(-)', 'tao_max(-)', 'reff(pc)', 'nh2_mean(10**21*cm-2)',
+                                      'nh2_max(10**21*cm-2)', 'M_sum(Msun)',  'M_vir(Msun)', 'vir_a(-)', 'density_s(g/(cm-2)'))
 
     outcat_d_physical = pd.concat([outcat, reault_pd], axis=1)
-    if outcat_d_p_path is None:
-        outcat_d_p_path = outcat_path.replace('.csv', '_physical.csv')
-    outcat_d_physical.to_csv(outcat_d_p_path, sep='\t', index=False)
+    if save_outcat_path is None:
+        save_outcat_path = outcat_path.replace('.csv', '_physical.csv')
+    outcat_d_physical.to_csv(save_outcat_path, sep='\t', index=False)
 
 
 if __name__ == '__main__':
-    outcat_path = r'test_data/0155+005_L_MGM/MWISP_outcat_d.csv'
-    co_12_path = r'test_data/0155+005_U/0155+005_U.fits'
-    co_13_path = r'test_data/0155+005_L/0155+005_L.fits'
-    calculate_pp(outcat_path, co_12_path, co_13_path, outcat_d_p_path='None1.csv')
+    pass

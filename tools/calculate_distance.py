@@ -67,7 +67,15 @@ def calculate_distance_outcat(outcat_path):
     return outcat_all
 
 
+def calc_dis_main(outcat_path, save_outcat_path=None):
+    outcat_all = calculate_distance_outcat(outcat_path)
+    if save_outcat_path is None:
+        save_outcat_path = outcat_path.replace('.csv', '_d.csv')
+
+    outcat_all.to_csv(save_outcat_path, sep='\t', index=False)
+
+
 if __name__ == '__main__':
     outcat_path = r'test_data/0155+005_L_MGM/MWISP_outcat.csv'
-    outcat_all = calculate_distance_outcat(outcat_path)
-    outcat_all.to_csv(outcat_path.replace('.csv', '_d.csv'), sep='\t', index=False)
+    save_outcat_path = outcat_path.replace('.csv', '_d.csv')
+    calc_dis_main(outcat_path, save_outcat_path=save_outcat_path)
