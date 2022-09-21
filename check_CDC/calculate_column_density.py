@@ -591,8 +591,8 @@ def calculate_physics_parameter(outcat):
 if __name__ == '__main__':
     outcat = r'test_data/0155+005_L_MGM/MWISP_outcat.csv'
     # outcat = r'test_data/0155+005_L_MGM/LDC_MGM_outcat/fitting_outcat.csv'
-    co_12_path = r'test_data/0155+005_U/0155+005_U.fits'
-    co_13_path = r'test_data/0155+005_L/0155+005_L.fits'
+    co_12_path = r'../test_data/0155+005_U/0155+005_U.fits'
+    co_13_path = r'../test_data/0155+005_L/0155+005_L.fits'
     Calculate_Parameters(outcat=outcat, pdf_path='hhh.pdf', co_12_path=co_12_path, co_13_path=co_13_path)
     info = []
     for i, item in enumerate(outcat):

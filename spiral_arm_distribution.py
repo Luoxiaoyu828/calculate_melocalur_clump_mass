@@ -77,7 +77,7 @@ def add_scalebar(lon, lat, length):
 
 
 if __name__ == '__main__':
-    df_raw = pd.read_csv(r'outcat_all_d.csv', sep='\t')
+    df_raw = pd.read_csv(r'data/outcat_all_d.csv', sep='\t')
     print(len(df_raw))
 
     Galactic_Longitude = df_raw.Galactic_Longitude

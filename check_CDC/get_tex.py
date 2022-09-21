@@ -5,7 +5,8 @@ import matplotlib.pyplot as plt
 import astropy.constants as Constant
 import astropy.units as u
 from scipy.optimize import curve_fit
-import calculate_core_parameters as ccp
+from check_CDC import calculate_core_parameters as ccp
+
 #
 # def calculate_tex():
 #     """

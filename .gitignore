@@ -4,5 +4,13 @@
 /pdf_gaussclumps_control_36
 /pdf_gaussclumps_control_37
 *.csv
+/ccd_loc
 /test_data
+/data_check_cpp
 /__pycache__
+/Distance
+/spiral_arm
+/R2_data_params_fwhm
+/MWISP_outcat
+/R2_data_params
+/data_check_cpp

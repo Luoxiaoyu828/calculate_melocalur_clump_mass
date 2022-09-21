@@ -248,7 +248,7 @@ def plot_dis_vel(Velocity, Distance, rect=None, fig_name=None):
 
 if __name__ == '__main__':
     # get_outcat_all()
-    outcat_all1 = pd.read_csv('outcat_all_fwhm_dloc.csv', sep='\t')
+    outcat_all1 = pd.read_csv('data/outcat_all_fwhm_dloc.csv', sep='\t')
     d_min = 1.95
     d_max = 2.2
     save_path = 'Distance_%.2fto%.2f_3' % (d_min, d_max)
